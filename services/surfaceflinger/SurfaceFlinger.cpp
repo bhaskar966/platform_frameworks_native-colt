@@ -3953,19 +3953,6 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
     const auto& displayState = display->getState();
     const auto displayId = display->getId();
     auto& renderEngine = getRenderEngine();
-    bool isSecureDisplay = false;
-    bool isSecureCamera = false;
-    for (const auto& layer : displayDevice->getVisibleLayersSortedByZ()) {
-        if (layer->isSecureDisplay()) {
-            isSecureDisplay = true;
-        }
-        if (layer->isSecureCamera()) {
-            isSecureCamera = true;
-        }
-    }
-
-    const bool supportProtectedContent =
-            renderEngine.supportsProtectedContent() && !isSecureDisplay && !isSecureCamera;
 
     const Region bounds(displayState.bounds);
     const DisplayRenderArea renderArea(displayDevice);
@@ -3982,22 +3969,13 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
     if (hasClientComposition) {
         ALOGV("hasClientComposition");
 
-        if (displayDevice->isPrimary() && supportProtectedContent) {
-            bool needsProtected = false;
-            for (auto& layer : displayDevice->getVisibleLayersSortedByZ()) {
-                // If the layer is a protected layer, mark protected context is needed.
-                if (layer->isProtected()) {
-                    needsProtected = true;
-                    break;
-                }
-            }
-            if (needsProtected != renderEngine.isProtected()) {
-                renderEngine.useProtectedContext(needsProtected);
-            }
-            if (needsProtected != display->getRenderSurface()->isProtected() &&
-                needsProtected == renderEngine.isProtected()) {
-                display->getRenderSurface()->setProtected(needsProtected);
-            }
+        bool needsProtectedContext = requiresProtecedContext(displayDevice);
+        if (needsProtectedContext != renderEngine.isProtected()) {
+            renderEngine.useProtectedContext(needsProtectedContext);
+        }
+        if (needsProtectedContext != display->getRenderSurface()->isProtected() &&
+            needsProtectedContext == renderEngine.isProtected()) {
+            display->getRenderSurface()->setProtected(needsProtectedContext);
         }
 
         buf = display->getRenderSurface()->dequeueBuffer(&fd);
@@ -4067,7 +4045,7 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
                         Region dummyRegion;
                         bool prepared =
                                 layer->prepareClientLayer(renderArea, clip, dummyRegion,
-                                                          supportProtectedContent, layerSettings);
+                                                          renderEngine.isProtected(), layerSettings);
 
                         if (prepared) {
                             layerSettings.source.buffer.buffer = nullptr;
@@ -4089,7 +4067,7 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
                     }
                     bool prepared =
                             layer->prepareClientLayer(renderArea, clip, clearRegion,
-                                                      supportProtectedContent, layerSettings);
+                                                      renderEngine.isProtected(), layerSettings);
                     if (prepared) {
                         clientCompositionLayers.push_back(layerSettings);
                     }
@@ -4137,6 +4115,33 @@ bool SurfaceFlinger::doComposeSurfaces(const sp<DisplayDevice>& displayDevice,
         mPowerAdvisor.setExpensiveRenderingExpected(*displayId, false);
     }
     return true;
+}
+
+bool SurfaceFlinger::requiresProtecedContext(const sp<DisplayDevice>& displayDevice) {
+    bool needsProtectedContext = false;
+    bool isProtected = false;
+    bool isSecureDisplay = false;
+    bool isSecureCamera = false;
+    auto& renderEngine = getRenderEngine();
+    auto display = displayDevice->getCompositionDisplay();
+    if (displayDevice->getId()) {
+        for (auto& layer : displayDevice->getVisibleLayersSortedByZ()) {
+            // If the layer is a protected layer, mark protected context is needed.
+            if (layer->isProtected()) {
+                isProtected = true;
+            }
+            if (layer->isSecureDisplay()) {
+                isSecureDisplay = true;
+            }
+            if (layer->isSecureCamera()) {
+                isSecureCamera = true;
+            }
+        }
+        needsProtectedContext = renderEngine.supportsProtectedContent() &&
+                                !isSecureDisplay && !isSecureCamera && isProtected;
+    }
+
+    return needsProtectedContext;
 }
 
 void SurfaceFlinger::drawWormhole(const Region& region) const {
